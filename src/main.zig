@@ -34,7 +34,9 @@ fn Map(allocator: *std.mem.Allocator, comptime KT: type, comptime VT: type, hash
             while (true) {
                 var bit = (keyHash >> level) & mask;
                 var maybeNode = if (bit == 0) node.left else node.right;
-                if (maybeNode == null) {
+                if (maybeNode) |unwrappedNode| {
+                    node = unwrappedNode;
+                } else {
                     if (write) {
                         var nextNode = try newNode(allocator, VT);
                         if (bit == 0) {
@@ -46,8 +48,6 @@ fn Map(allocator: *std.mem.Allocator, comptime KT: type, comptime VT: type, hash
                     } else {
                         return null;
                     }
-                } else {
-                    node = maybeNode orelse return error.LookupFailed;
                 }
                 if (level == 0) {
                     break;
@@ -60,14 +60,18 @@ fn Map(allocator: *std.mem.Allocator, comptime KT: type, comptime VT: type, hash
 
         fn put(self: *Self, key: KT, value: VT) !void {
             var maybeNode = self.lookup(key, true) catch |e| return e;
-            var node: *Node(VT) = maybeNode orelse return error.PutFailed;
-            node.value = value;
+            if (maybeNode) |node| {
+                node.value = value;
+            }
         }
 
         fn get(self: *Self, key: KT) !?VT {
             var maybeNode = self.lookup(key, false) catch |e| return e;
-            var node: *Node(VT) = maybeNode orelse return null;
-            return node.value;
+            if (maybeNode) |node| {
+                return node.value;
+            } else {
+                return null;
+            }
         }
     };
 }
