@@ -7,27 +7,78 @@ const width = 1 << bits;
 const mask = width - 1;
 const parts = @sizeOf(Hash) * 8 / bits;
 
-fn Node(comptime T: type) type {
+fn KeyValue(comptime KT: type, comptime VT: type) type {
     return struct {
-        value: ?T = null,
-        left: ?*@This() = null,
-        right: ?*@This() = null,
+        key: KT,
+        value: VT,
+        nextValue: ?*@This() = null,
     };
 }
 
-fn newNode(allocator: *std.mem.Allocator, comptime T: type) !*Node(T) {
-    const node: *Node(T) = try allocator.create(Node(T));
-    node.* = Node(T){};
+fn newValue(comptime KT: type, comptime VT: type, key: KT, value: VT, allocator: *std.mem.Allocator) !*KeyValue(KT, VT) {
+    const v: *KeyValue(KT, VT) = try allocator.create(KeyValue(KT, VT));
+    v.* = KeyValue(KT, VT){
+        .key = key,
+        .value = value,
+    };
+    return v;
+}
+
+fn Node(comptime KT: type, comptime VT: type) type {
+    return struct {
+        value: ?*KeyValue(KT, VT) = null,
+        left: ?*@This() = null,
+        right: ?*@This() = null,
+
+        fn getValue(self: *@This(), key: KT, equalsFn: fn (KT, KT) bool) ?*KeyValue(KT, VT) {
+            var maybeValue: ?*KeyValue(KT, VT) = self.value;
+            while (true) {
+                var valuePtr = maybeValue orelse break;
+                if (equalsFn(key, valuePtr.key)) {
+                    return maybeValue;
+                } else {
+                    maybeValue = valuePtr.nextValue orelse break;
+                }
+            }
+            return maybeValue;
+        }
+
+        fn setValue(self: *@This(), key: KT, value: VT, allocator: *std.mem.Allocator, equalsFn: fn (KT, KT) bool) !void {
+            if (self.value) |existingValue| {
+                var valuePtr: *KeyValue(KT, VT) = existingValue;
+                while (true) {
+                    if (equalsFn(key, valuePtr.key)) {
+                        valuePtr.value = value;
+                        return;
+                    } else {
+                        if (valuePtr.nextValue) |nextValue| {
+                            valuePtr = nextValue;
+                        } else {
+                            valuePtr.nextValue = try newValue(KT, VT, key, value, allocator);
+                            return;
+                        }
+                    }
+                }
+            } else {
+                self.value = try newValue(KT, VT, key, value, allocator);
+            }
+        }
+    };
+}
+
+fn newNode(comptime KT: type, comptime VT: type, allocator: *std.mem.Allocator) !*Node(KT, VT) {
+    const node: *Node(KT, VT) = try allocator.create(Node(KT, VT));
+    node.* = Node(KT, VT){};
     return node;
 }
 
-fn Map(allocator: *std.mem.Allocator, comptime KT: type, comptime VT: type, hashFn: fn (KT) Hash) type {
+fn Map(comptime KT: type, comptime VT: type, hashFn: fn (KT) Hash, equalsFn: fn (KT, KT) bool) type {
     return struct {
         const Self = @This();
 
-        head: *Node(VT),
+        head: *Node(KT, VT),
 
-        fn lookup(self: Self, key: KT, write: bool) !?*Node(VT) {
+        fn getNode(self: Self, key: KT, maybeAllocator: ?*std.mem.Allocator) !?*Node(KT, VT) {
             const keyHash = hashFn(key);
             var node = self.head;
             var level: u6 = parts - 1;
@@ -37,8 +88,8 @@ fn Map(allocator: *std.mem.Allocator, comptime KT: type, comptime VT: type, hash
                 if (maybeNode) |unwrappedNode| {
                     node = unwrappedNode;
                 } else {
-                    if (write) {
-                        var nextNode = try newNode(allocator, VT);
+                    if (maybeAllocator) |allocator| {
+                        var nextNode = try newNode(KT, VT, allocator);
                         if (bit == 0) {
                             node.left = nextNode;
                         } else {
@@ -58,17 +109,18 @@ fn Map(allocator: *std.mem.Allocator, comptime KT: type, comptime VT: type, hash
             return node;
         }
 
-        fn put(self: *Self, key: KT, value: VT) !void {
-            var maybeNode = self.lookup(key, true) catch |e| return e;
+        fn put(self: *Self, key: KT, value: VT, allocator: *std.mem.Allocator) !void {
+            var maybeNode = self.getNode(key, allocator) catch |e| return e;
             if (maybeNode) |node| {
-                node.value = value;
+                try node.setValue(key, value, allocator, equalsFn);
             }
         }
 
         fn get(self: *Self, key: KT) !?VT {
-            var maybeNode = self.lookup(key, false) catch |e| return e;
+            var maybeNode = self.getNode(key, null) catch |e| return e;
             if (maybeNode) |node| {
-                return node.value;
+                var v = node.getValue(key, equalsFn) orelse return null;
+                return v.value;
             } else {
                 return null;
             }
@@ -85,13 +137,18 @@ fn stringHasher(input: []const u8) Hash {
     return hash;
 }
 
+fn stringEquals(first: []const u8, second: []const u8) bool {
+    return std.mem.eql(u8, first, second);
+}
+
 test "basic map functionality" {
     std.debug.warn("\n");
     const da = std.heap.direct_allocator;
-    var m = Map(da, []const u8, []const u8, stringHasher){
-        .head = try newNode(da, []const u8),
+    var m = Map([]const u8, []const u8, stringHasher, stringEquals){
+        .head = try newNode([]const u8, []const u8, da),
     };
-    try m.put("name", "zach");
+    try m.put("name", "zach", da);
+    try m.put("name", "zach2", da);
     var name = try m.get("name");
     std.debug.warn("{}\n", name);
 }
