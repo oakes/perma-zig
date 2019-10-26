@@ -136,7 +136,7 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
 
         fn init(allocator: *std.mem.Allocator) !Self {
             return Self{
-                .head = try Node([]const u8, []const u8, equalsFn).init(allocator),
+                .head = try Node(KT, VT, equalsFn).init(allocator),
                 .allocator = allocator,
             };
         }
@@ -181,6 +181,11 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
             try node.put(key, value);
         }
 
+        fn add(self: *Self, value: VT) !void {
+            var node = self.getNode(value, true) catch |e| return e;
+            try node.put(value, value);
+        }
+
         fn get(self: *Self, key: KT) ?VT {
             var maybeNode = self.getNode(key, false) catch null;
             if (maybeNode) |node| {
@@ -200,6 +205,10 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
     };
 }
 
+fn Set(comptime T: type, comptime hashFn: fn (T) Hash, comptime equalsFn: fn (T, T) bool) type {
+    return Map(T, T, hashFn, equalsFn);
+}
+
 fn stringHasher(input: []const u8) Hash {
     // djb2
     var hash: Hash = 5381;
@@ -214,13 +223,23 @@ fn stringEquals(first: []const u8, second: []const u8) bool {
 }
 
 test "basic map functionality" {
-    std.debug.warn("\n");
     const da = std.heap.direct_allocator;
     var m = try Map([]const u8, []const u8, stringHasher, stringEquals).init(da);
     defer m.deinit();
     try m.put("name", "zach");
     try m.put("name2", "zach2");
-    m.remove("name");
-    var name = m.get("name");
-    std.debug.warn("{}\n", name);
+    m.remove("name2");
+    testing.expect(stringEquals(m.get("name") orelse "", "zach"));
+    testing.expect(m.get("name2") == null);
+}
+
+test "basic set functionality" {
+    const da = std.heap.direct_allocator;
+    var s = try Set([]const u8, stringHasher, stringEquals).init(da);
+    defer s.deinit();
+    try s.add("zach");
+    try s.add("zach2");
+    s.remove("zach2");
+    testing.expect(stringEquals(s.get("zach") orelse "", "zach"));
+    testing.expect(s.get("zach2") == null);
 }
