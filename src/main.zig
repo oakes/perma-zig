@@ -28,7 +28,7 @@ fn KeyValue(comptime KT: type, comptime VT: type) type {
     };
 }
 
-fn Node(comptime KT: type, comptime VT: type) type {
+fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) bool) type {
     return struct {
         const Self = @This();
 
@@ -38,14 +38,14 @@ fn Node(comptime KT: type, comptime VT: type) type {
         allocator: *std.mem.Allocator,
 
         fn init(allocator: *std.mem.Allocator) !*Self {
-            const node = try allocator.create(Node(KT, VT));
+            const node = try allocator.create(Node(KT, VT, equalsFn));
             node.* = Self{
                 .allocator = allocator,
             };
             return node;
         }
 
-        fn get(self: *Self, key: KT, equalsFn: fn (KT, KT) bool) ?*KeyValue(KT, VT) {
+        fn get(self: *Self, key: KT) ?*KeyValue(KT, VT) {
             var maybeValue: ?*KeyValue(KT, VT) = self.value;
             while (true) {
                 var valuePtr = maybeValue orelse break;
@@ -58,7 +58,7 @@ fn Node(comptime KT: type, comptime VT: type) type {
             return null;
         }
 
-        fn put(self: *Self, key: KT, value: VT, equalsFn: fn (KT, KT) bool) !void {
+        fn put(self: *Self, key: KT, value: VT) !void {
             if (self.value) |existingValue| {
                 var valuePtr: *KeyValue(KT, VT) = existingValue;
                 while (true) {
@@ -79,8 +79,8 @@ fn Node(comptime KT: type, comptime VT: type) type {
             }
         }
 
-        fn remove(self: *Self, key: KT, equalsFn: fn (KT, KT) bool) void {
-            var valueToRemove = self.get(key, equalsFn) orelse return;
+        fn remove(self: *Self, key: KT) void {
+            var valueToRemove = self.get(key) orelse return;
             if (self.value) |existingValue| {
                 var valuePtr: *KeyValue(KT, VT) = existingValue;
                 while (true) {
@@ -105,21 +105,21 @@ fn Node(comptime KT: type, comptime VT: type) type {
     };
 }
 
-fn Map(comptime KT: type, comptime VT: type, hashFn: fn (KT) Hash, equalsFn: fn (KT, KT) bool) type {
+fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comptime equalsFn: fn (KT, KT) bool) type {
     return struct {
         const Self = @This();
 
-        head: *Node(KT, VT),
+        head: *Node(KT, VT, equalsFn),
         allocator: *std.mem.Allocator,
 
         fn init(allocator: *std.mem.Allocator) !Self {
             return Self{
-                .head = try Node([]const u8, []const u8).init(allocator),
+                .head = try Node([]const u8, []const u8, equalsFn).init(allocator),
                 .allocator = allocator,
             };
         }
 
-        fn getNode(self: Self, key: KT, comptime write: bool) !*Node(KT, VT) {
+        fn getNode(self: Self, key: KT, comptime write: bool) !*Node(KT, VT, equalsFn) {
             const keyHash = hashFn(key);
             var node = self.head;
             var level: u6 = parts - 1;
@@ -130,7 +130,7 @@ fn Map(comptime KT: type, comptime VT: type, hashFn: fn (KT) Hash, equalsFn: fn 
                     node = unwrappedNode;
                 } else {
                     if (write) {
-                        var nextNode = try Node(KT, VT).init(self.allocator);
+                        var nextNode = try Node(KT, VT, equalsFn).init(self.allocator);
                         if (bit == 0) {
                             node.left = nextNode;
                         } else {
@@ -152,13 +152,13 @@ fn Map(comptime KT: type, comptime VT: type, hashFn: fn (KT) Hash, equalsFn: fn 
 
         fn put(self: *Self, key: KT, value: VT) !void {
             var node = self.getNode(key, true) catch |e| return e;
-            try node.put(key, value, equalsFn);
+            try node.put(key, value);
         }
 
         fn get(self: *Self, key: KT) ?VT {
             var maybeNode = self.getNode(key, false) catch null;
             if (maybeNode) |node| {
-                var v = node.get(key, equalsFn) orelse return null;
+                var v = node.get(key) orelse return null;
                 return v.value;
             } else {
                 return null;
@@ -168,7 +168,7 @@ fn Map(comptime KT: type, comptime VT: type, hashFn: fn (KT) Hash, equalsFn: fn 
         fn remove(self: *Self, key: KT) void {
             var maybeNode = self.getNode(key, false) catch null;
             if (maybeNode) |node| {
-                node.remove(key, equalsFn);
+                node.remove(key);
             }
         }
     };
