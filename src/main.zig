@@ -15,6 +15,7 @@ fn KeyValue(comptime KT: type, comptime VT: type) type {
         value: VT,
         nextValue: ?*Self = null,
         prevValue: ?*Self = null,
+        allocator: *std.mem.Allocator,
 
         fn init(key: KT, value: VT, prevValue: ?*Self, allocator: *std.mem.Allocator) !*Self {
             const v = try allocator.create(KeyValue(KT, VT));
@@ -22,8 +23,16 @@ fn KeyValue(comptime KT: type, comptime VT: type) type {
                 .key = key,
                 .value = value,
                 .prevValue = prevValue,
+                .allocator = allocator,
             };
             return v;
+        }
+
+        fn deinit(self: *Self) void {
+            if (self.nextValue) |unwrappedValue| {
+                unwrappedValue.deinit();
+            }
+            self.allocator.destroy(self);
         }
     };
 }
@@ -43,6 +52,19 @@ fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) boo
                 .allocator = allocator,
             };
             return node;
+        }
+
+        fn deinit(self: *Self) void {
+            if (self.value) |unwrappedValue| {
+                unwrappedValue.deinit();
+            }
+            if (self.left) |unwrappedLeft| {
+                unwrappedLeft.deinit();
+            }
+            if (self.right) |unwrappedRight| {
+                unwrappedRight.deinit();
+            }
+            self.allocator.destroy(self);
         }
 
         fn get(self: *Self, key: KT) ?*KeyValue(KT, VT) {
@@ -119,6 +141,10 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
             };
         }
 
+        fn deinit(self: *Self) void {
+            self.head.deinit();
+        }
+
         fn getNode(self: Self, key: KT, comptime write: bool) !*Node(KT, VT, equalsFn) {
             const keyHash = hashFn(key);
             var node = self.head;
@@ -191,6 +217,7 @@ test "basic map functionality" {
     std.debug.warn("\n");
     const da = std.heap.direct_allocator;
     var m = try Map([]const u8, []const u8, stringHasher, stringEquals).init(da);
+    defer m.deinit();
     try m.put("name", "zach");
     try m.put("name2", "zach2");
     m.remove("name");
