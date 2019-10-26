@@ -18,7 +18,7 @@ fn KeyValue(comptime KT: type, comptime VT: type) type {
         allocator: *std.mem.Allocator,
 
         fn init(key: KT, value: VT, prevValue: ?*Self, allocator: *std.mem.Allocator) !*Self {
-            const v = try allocator.create(KeyValue(KT, VT));
+            const v = try allocator.create(Self);
             v.* = KeyValue(KT, VT){
                 .key = key,
                 .value = value,
@@ -47,7 +47,7 @@ fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) boo
         allocator: *std.mem.Allocator,
 
         fn init(allocator: *std.mem.Allocator) !*Self {
-            const node = try allocator.create(Node(KT, VT, equalsFn));
+            const node = try allocator.create(Self);
             node.* = Self{
                 .allocator = allocator,
             };
