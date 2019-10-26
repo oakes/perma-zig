@@ -177,12 +177,12 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
         }
 
         fn put(self: *Self, key: KT, value: VT) !void {
-            var node = self.getNode(key, true) catch |e| return e;
+            var node = try self.getNode(key, true);
             try node.put(key, value);
         }
 
         fn add(self: *Self, value: VT) !void {
-            var node = self.getNode(value, true) catch |e| return e;
+            var node = try self.getNode(value, true);
             try node.put(value, value);
         }
 
