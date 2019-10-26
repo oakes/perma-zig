@@ -12,14 +12,16 @@ fn KeyValue(comptime KT: type, comptime VT: type) type {
         key: KT,
         value: VT,
         nextValue: ?*@This() = null,
+        prevValue: ?*@This() = null,
     };
 }
 
-fn newValue(comptime KT: type, comptime VT: type, key: KT, value: VT, allocator: *std.mem.Allocator) !*KeyValue(KT, VT) {
+fn newValue(comptime KT: type, comptime VT: type, key: KT, value: VT, prevValue: ?*KeyValue(KT, VT), allocator: *std.mem.Allocator) !*KeyValue(KT, VT) {
     const v: *KeyValue(KT, VT) = try allocator.create(KeyValue(KT, VT));
     v.* = KeyValue(KT, VT){
         .key = key,
         .value = value,
+        .prevValue = prevValue,
     };
     return v;
 }
@@ -30,7 +32,7 @@ fn Node(comptime KT: type, comptime VT: type) type {
         left: ?*@This() = null,
         right: ?*@This() = null,
 
-        fn getValue(self: *@This(), key: KT, equalsFn: fn (KT, KT) bool) ?*KeyValue(KT, VT) {
+        fn get(self: *@This(), key: KT, equalsFn: fn (KT, KT) bool) ?*KeyValue(KT, VT) {
             var maybeValue: ?*KeyValue(KT, VT) = self.value;
             while (true) {
                 var valuePtr = maybeValue orelse break;
@@ -40,10 +42,10 @@ fn Node(comptime KT: type, comptime VT: type) type {
                     maybeValue = valuePtr.nextValue orelse break;
                 }
             }
-            return maybeValue;
+            return null;
         }
 
-        fn setValue(self: *@This(), key: KT, value: VT, allocator: *std.mem.Allocator, equalsFn: fn (KT, KT) bool) !void {
+        fn put(self: *@This(), key: KT, value: VT, allocator: *std.mem.Allocator, equalsFn: fn (KT, KT) bool) !void {
             if (self.value) |existingValue| {
                 var valuePtr: *KeyValue(KT, VT) = existingValue;
                 while (true) {
@@ -54,13 +56,37 @@ fn Node(comptime KT: type, comptime VT: type) type {
                         if (valuePtr.nextValue) |nextValue| {
                             valuePtr = nextValue;
                         } else {
-                            valuePtr.nextValue = try newValue(KT, VT, key, value, allocator);
+                            valuePtr.nextValue = try newValue(KT, VT, key, value, valuePtr, allocator);
                             return;
                         }
                     }
                 }
             } else {
-                self.value = try newValue(KT, VT, key, value, allocator);
+                self.value = try newValue(KT, VT, key, value, null, allocator);
+            }
+        }
+
+        fn remove(self: *@This(), key: KT, allocator: *std.mem.Allocator, equalsFn: fn (KT, KT) bool) void {
+            var valueToRemove = self.get(key, equalsFn) orelse return;
+            if (self.value) |existingValue| {
+                var valuePtr: *KeyValue(KT, VT) = existingValue;
+                while (true) {
+                    if (valuePtr == valueToRemove) {
+                        if (valuePtr.prevValue) |prevValue| {
+                            prevValue.nextValue = valuePtr.nextValue;
+                        } else {
+                            self.value = valuePtr.nextValue;
+                        }
+                        allocator.destroy(valuePtr);
+                        return;
+                    } else {
+                        if (valuePtr.nextValue) |nextValue| {
+                            valuePtr = nextValue;
+                        } else {
+                            return;
+                        }
+                    }
+                }
             }
         }
     };
@@ -112,17 +138,24 @@ fn Map(comptime KT: type, comptime VT: type, hashFn: fn (KT) Hash, equalsFn: fn 
         fn put(self: *Self, key: KT, value: VT, allocator: *std.mem.Allocator) !void {
             var maybeNode = self.getNode(key, allocator) catch |e| return e;
             if (maybeNode) |node| {
-                try node.setValue(key, value, allocator, equalsFn);
+                try node.put(key, value, allocator, equalsFn);
             }
         }
 
         fn get(self: *Self, key: KT) !?VT {
             var maybeNode = self.getNode(key, null) catch |e| return e;
             if (maybeNode) |node| {
-                var v = node.getValue(key, equalsFn) orelse return null;
+                var v = node.get(key, equalsFn) orelse return null;
                 return v.value;
             } else {
                 return null;
+            }
+        }
+
+        fn remove(self: *Self, key: KT, allocator: *std.mem.Allocator) !void {
+            var maybeNode = self.getNode(key, null) catch |e| return e;
+            if (maybeNode) |node| {
+                node.remove(key, allocator, equalsFn);
             }
         }
     };
@@ -148,7 +181,8 @@ test "basic map functionality" {
         .head = try newNode([]const u8, []const u8, da),
     };
     try m.put("name", "zach", da);
-    try m.put("name", "zach2", da);
+    try m.put("name2", "zach2", da);
+    try m.remove("name", da);
     var name = try m.get("name");
     std.debug.warn("{}\n", name);
 }
