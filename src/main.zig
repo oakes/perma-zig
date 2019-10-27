@@ -55,29 +55,39 @@ fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) boo
         left: ?*Self = null,
         right: ?*Self = null,
         allocator: *std.mem.Allocator,
-        owner: *Self,
+        refCount: i32 = 1,
 
-        fn init(allocator: *std.mem.Allocator, owner: ?*Self) !*Self {
+        fn init(allocator: *std.mem.Allocator) !*Self {
             const node = try allocator.create(Self);
             node.* = Self{
                 .allocator = allocator,
-                .owner = owner orelse node,
             };
             return node;
         }
 
-        fn deinit(self: *Self, owner: *Self) void {
-            if (self.owner == owner) {
+        fn deinit(self: *Self) void {
+            if (self.left) |unwrappedLeft| {
+                unwrappedLeft.deinit();
+            }
+            if (self.right) |unwrappedRight| {
+                unwrappedRight.deinit();
+            }
+            self.refCount -= 1;
+            if (self.refCount == 0) {
                 if (self.value) |unwrappedValue| {
                     unwrappedValue.deinit();
                 }
-                if (self.left) |unwrappedLeft| {
-                    unwrappedLeft.deinit(owner);
-                }
-                if (self.right) |unwrappedRight| {
-                    unwrappedRight.deinit(owner);
-                }
                 self.allocator.destroy(self);
+            }
+        }
+
+        fn incRefCount(self: *Self) void {
+            self.refCount += 1;
+            if (self.left) |left| {
+                left.incRefCount();
+            }
+            if (self.right) |right| {
+                right.incRefCount();
             }
         }
 
@@ -150,13 +160,13 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
 
         fn init(allocator: *std.mem.Allocator) !Self {
             return Self{
-                .head = try Node(KT, VT, equalsFn).init(allocator, null),
+                .head = try Node(KT, VT, equalsFn).init(allocator),
                 .allocator = allocator,
             };
         }
 
         fn deinit(self: *Self) void {
-            self.head.deinit(self.head);
+            self.head.deinit();
         }
 
         fn getNode(self: Self, key: KT, comptime writeWhenNotFound: bool, comptime writeWhenFound: bool) !*Node(KT, VT, equalsFn) {
@@ -168,7 +178,8 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
                 var maybeNode = if (bit == 0) node.left else node.right;
                 if (maybeNode) |unwrappedNode| {
                     if (writeWhenFound) {
-                        var nextNode = try Node(KT, VT, equalsFn).init(self.allocator, self.head);
+                        unwrappedNode.refCount -= 1;
+                        var nextNode = try Node(KT, VT, equalsFn).init(self.allocator);
                         if (unwrappedNode.value) |unwrappedValue| {
                             nextNode.value = try unwrappedValue.clone();
                         }
@@ -185,7 +196,7 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
                     }
                 } else {
                     if (writeWhenNotFound) {
-                        var nextNode = try Node(KT, VT, equalsFn).init(self.allocator, self.head);
+                        var nextNode = try Node(KT, VT, equalsFn).init(self.allocator);
                         if (bit == 0) {
                             node.left = nextNode;
                         } else {
@@ -207,8 +218,14 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
 
         fn clone(self: *Self) !Self {
             var m = try Self.init(self.allocator);
-            m.head.left = self.head.left;
-            m.head.right = self.head.right;
+            if (self.head.left) |left| {
+                left.incRefCount();
+                m.head.left = left;
+            }
+            if (self.head.right) |right| {
+                right.incRefCount();
+                m.head.right = right;
+            }
             return m;
         }
 
@@ -296,6 +313,7 @@ test "basic set functionality" {
 
 test "immutable ops" {
     const da = std.heap.direct_allocator;
+
     var m1 = try Map([]const u8, []const u8, stringHasher, stringEquals).init(da);
     defer m1.deinit();
     try m1.put("name", "zach");
