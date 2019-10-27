@@ -34,6 +34,16 @@ fn KeyValue(comptime KT: type, comptime VT: type) type {
             }
             self.allocator.destroy(self);
         }
+
+        fn clone(self: *Self) error{OutOfMemory}!*Self {
+            const v = try Self.init(self.key, self.value, null, self.allocator);
+            if (self.nextValue) |nextValue| {
+                var next = try nextValue.clone();
+                v.nextValue = next;
+                next.prevValue = self;
+            }
+            return v;
+        }
     };
 }
 
@@ -45,26 +55,30 @@ fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) boo
         left: ?*Self = null,
         right: ?*Self = null,
         allocator: *std.mem.Allocator,
+        owner: *Self,
 
-        fn init(allocator: *std.mem.Allocator) !*Self {
+        fn init(allocator: *std.mem.Allocator, owner: ?*Self) !*Self {
             const node = try allocator.create(Self);
             node.* = Self{
                 .allocator = allocator,
+                .owner = owner orelse node,
             };
             return node;
         }
 
-        fn deinit(self: *Self) void {
-            if (self.value) |unwrappedValue| {
-                unwrappedValue.deinit();
+        fn deinit(self: *Self, owner: *Self) void {
+            if (self.owner == owner) {
+                if (self.value) |unwrappedValue| {
+                    unwrappedValue.deinit();
+                }
+                if (self.left) |unwrappedLeft| {
+                    unwrappedLeft.deinit(owner);
+                }
+                if (self.right) |unwrappedRight| {
+                    unwrappedRight.deinit(owner);
+                }
+                self.allocator.destroy(self);
             }
-            if (self.left) |unwrappedLeft| {
-                unwrappedLeft.deinit();
-            }
-            if (self.right) |unwrappedRight| {
-                unwrappedRight.deinit();
-            }
-            self.allocator.destroy(self);
         }
 
         fn get(self: *Self, key: KT) ?*KeyValue(KT, VT) {
@@ -136,16 +150,16 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
 
         fn init(allocator: *std.mem.Allocator) !Self {
             return Self{
-                .head = try Node(KT, VT, equalsFn).init(allocator),
+                .head = try Node(KT, VT, equalsFn).init(allocator, null),
                 .allocator = allocator,
             };
         }
 
         fn deinit(self: *Self) void {
-            self.head.deinit();
+            self.head.deinit(self.head);
         }
 
-        fn getNode(self: Self, key: KT, comptime write: bool) !*Node(KT, VT, equalsFn) {
+        fn getNode(self: Self, key: KT, comptime writeWhenNotFound: bool, comptime writeWhenFound: bool) !*Node(KT, VT, equalsFn) {
             const keyHash = hashFn(key);
             var node = self.head;
             var level: u6 = parts - 1;
@@ -153,10 +167,25 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
                 var bit = (keyHash >> level) & mask;
                 var maybeNode = if (bit == 0) node.left else node.right;
                 if (maybeNode) |unwrappedNode| {
-                    node = unwrappedNode;
+                    if (writeWhenFound) {
+                        var nextNode = try Node(KT, VT, equalsFn).init(self.allocator, self.head);
+                        if (unwrappedNode.value) |unwrappedValue| {
+                            nextNode.value = try unwrappedValue.clone();
+                        }
+                        nextNode.left = unwrappedNode.left;
+                        nextNode.right = unwrappedNode.right;
+                        if (bit == 0) {
+                            node.left = nextNode;
+                        } else {
+                            node.right = nextNode;
+                        }
+                        node = nextNode;
+                    } else {
+                        node = unwrappedNode;
+                    }
                 } else {
-                    if (write) {
-                        var nextNode = try Node(KT, VT, equalsFn).init(self.allocator);
+                    if (writeWhenNotFound) {
+                        var nextNode = try Node(KT, VT, equalsFn).init(self.allocator, self.head);
                         if (bit == 0) {
                             node.left = nextNode;
                         } else {
@@ -176,18 +205,39 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
             return node;
         }
 
+        fn clone(self: *Self) !Self {
+            var m = try Self.init(self.allocator);
+            m.head.left = self.head.left;
+            m.head.right = self.head.right;
+            return m;
+        }
+
         fn put(self: *Self, key: KT, value: VT) !void {
-            var node = try self.getNode(key, true);
+            var node = try self.getNode(key, true, false);
             try node.put(key, value);
         }
 
+        fn putImmutable(self: *Self, key: KT, value: VT) !Self {
+            var m = try self.clone();
+            var node = try m.getNode(key, true, true);
+            try node.put(key, value);
+            return m;
+        }
+
         fn add(self: *Self, value: VT) !void {
-            var node = try self.getNode(value, true);
+            var node = try self.getNode(value, true, false);
             try node.put(value, value);
         }
 
+        fn addImmutable(self: *Self, value: VT) !Self {
+            var s = try self.clone();
+            var node = try s.getNode(value, true, true);
+            try node.put(value, value);
+            return s;
+        }
+
         fn get(self: *Self, key: KT) ?VT {
-            var maybeNode = self.getNode(key, false) catch null;
+            var maybeNode = self.getNode(key, false, false) catch null;
             if (maybeNode) |node| {
                 var v = node.get(key) orelse return null;
                 return v.value;
@@ -197,7 +247,7 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
         }
 
         fn remove(self: *Self, key: KT) void {
-            var maybeNode = self.getNode(key, false) catch null;
+            var maybeNode = self.getNode(key, false, false) catch null;
             if (maybeNode) |node| {
                 node.remove(key);
             }
@@ -242,4 +292,27 @@ test "basic set functionality" {
     s.remove("zach2");
     testing.expect(stringEquals(s.get("zach") orelse "", "zach"));
     testing.expect(s.get("zach2") == null);
+}
+
+test "immutable ops" {
+    const da = std.heap.direct_allocator;
+    var m1 = try Map([]const u8, []const u8, stringHasher, stringEquals).init(da);
+    defer m1.deinit();
+    try m1.put("name", "zach");
+    try m1.put("name2", "zach3");
+    var m2 = try m1.putImmutable("name", "zach2");
+    defer m2.deinit();
+    testing.expect(stringEquals(m1.get("name") orelse "", "zach"));
+    testing.expect(stringEquals(m2.get("name") orelse "", "zach2"));
+    testing.expect(stringEquals(m2.get("name2") orelse "", "zach3"));
+
+    var s1 = try Set([]const u8, stringHasher, stringEquals).init(da);
+    defer s1.deinit();
+    try s1.add("zach");
+    var s2 = try s1.addImmutable("zach2");
+    defer s2.deinit();
+    testing.expect(stringEquals(s1.get("zach") orelse "", "zach"));
+    testing.expect(s1.get("zach2") == null);
+    testing.expect(stringEquals(s2.get("zach") orelse "", "zach"));
+    testing.expect(stringEquals(s2.get("zach2") orelse "", "zach2"));
 }
