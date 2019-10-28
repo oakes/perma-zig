@@ -72,7 +72,13 @@ fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) boo
             if (self.right) |unwrappedRight| {
                 unwrappedRight.deinit();
             }
-            self.decRefCount();
+            self.refCount -= 1;
+            if (self.refCount == 0) {
+                if (self.value) |unwrappedValue| {
+                    unwrappedValue.deinit();
+                }
+                self.allocator.destroy(self);
+            }
         }
 
         fn incRefCount(self: *Self) void {
@@ -82,16 +88,6 @@ fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) boo
             }
             if (self.right) |right| {
                 right.incRefCount();
-            }
-        }
-
-        fn decRefCount(self: *Self) void {
-            self.refCount -= 1;
-            if (self.refCount == 0) {
-                if (self.value) |unwrappedValue| {
-                    unwrappedValue.deinit();
-                }
-                self.allocator.destroy(self);
             }
         }
 
@@ -181,14 +177,14 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
                 var bit = (keyHash >> level) & mask;
                 var maybeNode = if (bit == 0) node.left else node.right;
                 if (maybeNode) |unwrappedNode| {
-                    if (writeWhenFound) {
+                    if (writeWhenFound and unwrappedNode.refCount > 1) {
                         var nextNode = try Node(KT, VT, equalsFn).init(self.allocator);
                         if (unwrappedNode.value) |unwrappedValue| {
                             nextNode.value = try unwrappedValue.clone();
                         }
                         nextNode.left = unwrappedNode.left;
                         nextNode.right = unwrappedNode.right;
-                        unwrappedNode.decRefCount();
+                        unwrappedNode.refCount -= 1;
                         if (bit == 0) {
                             node.left = nextNode;
                         } else {
