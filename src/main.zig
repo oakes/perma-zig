@@ -72,13 +72,7 @@ fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) boo
             if (self.right) |unwrappedRight| {
                 unwrappedRight.deinit();
             }
-            self.refCount -= 1;
-            if (self.refCount == 0) {
-                if (self.value) |unwrappedValue| {
-                    unwrappedValue.deinit();
-                }
-                self.allocator.destroy(self);
-            }
+            self.decRefCount();
         }
 
         fn incRefCount(self: *Self) void {
@@ -88,6 +82,16 @@ fn Node(comptime KT: type, comptime VT: type, comptime equalsFn: fn (KT, KT) boo
             }
             if (self.right) |right| {
                 right.incRefCount();
+            }
+        }
+
+        fn decRefCount(self: *Self) void {
+            self.refCount -= 1;
+            if (self.refCount == 0) {
+                if (self.value) |unwrappedValue| {
+                    unwrappedValue.deinit();
+                }
+                self.allocator.destroy(self);
             }
         }
 
@@ -178,13 +182,13 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
                 var maybeNode = if (bit == 0) node.left else node.right;
                 if (maybeNode) |unwrappedNode| {
                     if (writeWhenFound) {
-                        unwrappedNode.refCount -= 1;
                         var nextNode = try Node(KT, VT, equalsFn).init(self.allocator);
                         if (unwrappedNode.value) |unwrappedValue| {
                             nextNode.value = try unwrappedValue.clone();
                         }
                         nextNode.left = unwrappedNode.left;
                         nextNode.right = unwrappedNode.right;
+                        unwrappedNode.decRefCount();
                         if (bit == 0) {
                             node.left = nextNode;
                         } else {
@@ -230,27 +234,13 @@ fn Map(comptime KT: type, comptime VT: type, comptime hashFn: fn (KT) Hash, comp
         }
 
         fn put(self: *Self, key: KT, value: VT) !void {
-            var node = try self.getNode(key, true, false);
+            var node = try self.getNode(key, true, true);
             try node.put(key, value);
-        }
-
-        fn putImmutable(self: *Self, key: KT, value: VT) !Self {
-            var m = try self.clone();
-            var node = try m.getNode(key, true, true);
-            try node.put(key, value);
-            return m;
         }
 
         fn add(self: *Self, value: VT) !void {
-            var node = try self.getNode(value, true, false);
+            var node = try self.getNode(value, true, true);
             try node.put(value, value);
-        }
-
-        fn addImmutable(self: *Self, value: VT) !Self {
-            var s = try self.clone();
-            var node = try s.getNode(value, true, true);
-            try node.put(value, value);
-            return s;
         }
 
         fn get(self: *Self, key: KT) ?VT {
@@ -318,7 +308,9 @@ test "immutable ops" {
     defer m1.deinit();
     try m1.put("name", "zach");
     try m1.put("name2", "zach3");
-    var m2 = try m1.putImmutable("name", "zach2");
+    var m2 = try m1.clone();
+    try m2.put("name", "zach4");
+    try m2.put("name", "zach2");
     defer m2.deinit();
     testing.expect(stringEquals(m1.get("name") orelse "", "zach"));
     testing.expect(stringEquals(m2.get("name") orelse "", "zach2"));
@@ -327,7 +319,8 @@ test "immutable ops" {
     var s1 = try Set([]const u8, stringHasher, stringEquals).init(da);
     defer s1.deinit();
     try s1.add("zach");
-    var s2 = try s1.addImmutable("zach2");
+    var s2 = try s1.clone();
+    try s2.add("zach2");
     defer s2.deinit();
     testing.expect(stringEquals(s1.get("zach") orelse "", "zach"));
     testing.expect(s1.get("zach2") == null);
